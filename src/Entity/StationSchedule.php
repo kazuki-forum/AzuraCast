@@ -10,6 +10,8 @@ use Carbon\CarbonInterface;
 use DateTimeZone;
 use Doctrine\ORM\Mapping as ORM;
 use OpenApi\Attributes as OA;
+use Recurr\Frequency;
+use Recurr\Rule;
 
 #[
     OA\Schema(type: "object"),
@@ -185,6 +187,52 @@ class StationSchedule implements IdentifiableEntityInterface
     public function setLoopOnce(bool $loop_once): void
     {
         $this->loop_once = $loop_once;
+    }
+
+    public function getRRule(string|DateTimeZone $tz = null): Rule
+    {
+        $tz ??= new \DateTimeZone('UTC');
+        if (!($tz instanceof DateTimeZone)) {
+            $tz = new \DateTimeZone($tz);
+        }
+
+        $startDate = (!empty($this->start_date))
+            ? CarbonImmutable::createFromFormat('Y-m-d', $this->start_date, $tz)
+            : CarbonImmutable::parse('-1 year', $tz);
+        $startDate = $startDate->setTime(0, 0, 0);
+
+        $endDate = (!empty($this->end_date))
+            ? CarbonImmutable::createFromFormat('Y-m-d', $this->end_date, $tz)
+            : CarbonImmutable::parse('+1 year', $tz);
+        $endDate = $endDate->setTime(23, 59, 59);
+
+        $startTime = self::getDateTime($this->start_time, $startDate);
+        $endTime = self::getDateTime($this->end_time, $startDate);
+        if ($startTime > $endTime) {
+            $endTime = $endTime->addDay();
+        }
+
+        $rule = (new Rule)
+            ->setTimezone($tz)
+            ->setStartDate($startTime)
+            ->setEndDate($endTime)
+            ->setUntil($endDate);
+
+        $days = $this->getDays();
+        if (empty($days)) {
+            $rule = $rule->setFreq(Frequency::DAILY);
+        } else {
+            $dayLookup = ['', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA', 'SU'];
+            $rule = $rule->setFreq(Frequency::WEEKLY)
+                ->setByDay(
+                    array_map(
+                        fn($day) => $dayLookup[$day],
+                        $days
+                    )
+                );
+        }
+
+        return $rule;
     }
 
     public function __toString(): string

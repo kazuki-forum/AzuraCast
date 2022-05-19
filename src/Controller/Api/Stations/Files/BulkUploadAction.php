@@ -92,28 +92,55 @@ class BulkUploadAction
         $reader = Reader::createFromPath($csvPath);
         $reader->setHeaderOffset(0);
 
-        $errors = [];
         $processed = 0;
+        $importResults = [];
 
         $i = 0;
         $batchSize = 50;
 
         foreach ($reader->getRecords() as $row) {
+            $row = (array)$row;
+            if (isset($row['id'], $mediaByUniqueId[$row['id']])) {
+                $mediaId = $mediaByUniqueId[$row['id']];
+            } elseif (isset($row['path'], $mediaByPath[md5($row['path'])])) {
+                $mediaId = $mediaByPath[md5($row['path'])];
+            } else {
+                continue;
+            }
+
+            $record = $this->em->find(Entity\StationMedia::class, $mediaId);
+            if (!$record instanceof Entity\StationMedia) {
+                continue;
+            }
+
+            unset($row['id'], $row['path']);
+
+            $importResult = [
+                'id' => $record->getIdRequired(),
+                'title' => $record->getTitle(),
+                'artist' => $record->getArtist(),
+                'success' => false,
+                'error' => null,
+            ];
+
             try {
-                if (
-                    $this->processRow(
-                        (array)$row,
-                        $mediaByPath,
-                        $mediaByUniqueId,
-                        $customFieldShortNames,
-                        $playlistsByName
-                    )
-                ) {
+                $rowResult = $this->processRow(
+                    $record,
+                    $row,
+                    $customFieldShortNames,
+                    $playlistsByName
+                );
+
+                $importResult['success'] = $rowResult;
+                if ($rowResult) {
                     $processed++;
                 }
             } catch (\Throwable $e) {
-                $errors[] = $e->getMessage();
+                $importResult['success'] = false;
+                $importResult['error'] = $e->getMessage();
             }
+
+            $importResults[] = $importResult;
 
             $i++;
             if (0 === $i % $batchSize) {
@@ -127,41 +154,21 @@ class BulkUploadAction
 
         return $response->withJson(
             new Entity\Api\StationPlaylistImportResult(
-                import_results: [
-                    'processed' => $processed,
-                    'errors' => $errors,
-                ]
+                message: sprintf(__('%d files processed.'), $processed),
+                import_results: $importResults
             )
         );
     }
 
     protected function processRow(
+        Entity\StationMedia $record,
         array $row,
-        array $mediaByPath,
-        array $mediaByUniqueId,
         array $customFieldShortNames,
         array $playlistsByName
     ): bool {
-        if (isset($row['id'], $mediaByUniqueId[$row['id']])) {
-            $mediaId = $mediaByUniqueId[$row['id']];
-        } elseif (isset($row['path'], $mediaByPath[md5($row['path'])])) {
-            $mediaId = $mediaByPath[md5($row['path'])];
-        } else {
-            return false;
-        }
-
-        $record = $this->em->find(Entity\StationMedia::class, $mediaId);
-        if (!$record instanceof Entity\StationMedia) {
-            return false;
-        }
-
-        unset($row['id'], $row['path']);
-
         $mediaRow = [];
-
         $hasPlaylists = false;
         $playlists = [];
-
         $hasCustomFields = false;
         $customFields = [];
 
@@ -180,10 +187,12 @@ class BulkUploadAction
                 }
             } elseif ('playlists' === $key) {
                 $hasPlaylists = true;
-                foreach (explode(',', $value) as $playlistName) {
-                    $playlistShortName = Entity\StationPlaylist::generateShortName($playlistName);
-                    if (isset($playlistsByName[$playlistShortName])) {
-                        $playlists[] = $playlistsByName[$playlistShortName];
+                if (null !== $value) {
+                    foreach (explode(',', $value) as $playlistName) {
+                        $playlistShortName = Entity\StationPlaylist::generateShortName($playlistName);
+                        if (isset($playlistsByName[$playlistShortName])) {
+                            $playlists[] = $playlistsByName[$playlistShortName];
+                        }
                     }
                 }
             }
